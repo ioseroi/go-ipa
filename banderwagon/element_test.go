@@ -327,6 +327,75 @@ func TestBatchNormalize(t *testing.T) {
 	})
 }
 
+func TestBytesUncompressSerializeDeserialize(t *testing.T) {
+	t.Parallel()
+
+	var point Element
+	point.Add(&Generator, &Generator)
+	point.Double(&Generator)
+
+	bytesUncompressed := point.BytesUncompressedTrusted()
+
+	var point2 Element
+
+	// Trying to deserialize the from an untrusted source would mean that the Y coordinate would be checked from
+	// the EC formula. This would reject the point since BytesUncompressedTrusted() doesn't consider the Y coordinate sign.
+	if err := point2.SetBytesUncompressed(bytesUncompressed[:], false); err == nil {
+		t.Fatalf("the point must be rejected since the serialized bytes didn't consider the Y coordinate sign")
+	}
+
+	// Deserializing with the trusted flag, must succeed since it's simply deserializing the x and y coordinate directly
+	// without subgroup or lexicographic checks.
+	if err := point2.SetBytesUncompressed(bytesUncompressed[:], true); err != nil {
+		t.Fatalf("could not deserialize point: %s", err)
+	}
+	if !point.Equal(&point2) {
+		t.Fatalf("deserialized point does not match original point")
+	}
+}
+
+func TestSetUncompressedFail(t *testing.T) {
+	t.Parallel()
+	one := fp.One()
+
+	t.Run("X not in curve", func(t *testing.T) {
+		startX := one
+		// Find in startX a point that isn't in the curve
+		for {
+			point := bandersnatch.GetPointFromX(&startX, true)
+			if point == nil {
+				break
+			}
+			startX.Add(&startX, &one)
+			continue
+		}
+		var serializedPoint [UncompressedSize]byte
+		xBytes := startX.Bytes()
+		yBytes := Generator.inner.Y.Bytes() // Use some valid-ish Y, but this shouldn't matter much.
+		copy(serializedPoint[:], xBytes[:])
+		copy(serializedPoint[CompressedSize:], yBytes[:])
+
+		var point2 Element
+		if err := point2.SetBytesUncompressed(serializedPoint[:], false); err == nil {
+			t.Fatalf("the point must be rejected")
+		}
+	})
+
+	t.Run("wrong Y", func(t *testing.T) {
+		gen := Generator
+		// Despite X would lead to a point in the curve,
+		// we modify Y+1 to check the provided (serialized) Y
+		// coordinate isn't trusted blindly.
+		gen.inner.Y.Add(&gen.inner.Y, &one)
+
+		pointBytes := gen.BytesUncompressedTrusted()
+		var point2 Element
+		if err := point2.SetBytesUncompressed(pointBytes[:], false); err == nil {
+			t.Fatalf("the point must be rejected")
+		}
+	})
+}
+
 func FuzzDeserializationCompressed(f *testing.F) {
 	f.Fuzz(func(t *testing.T, serializedpoint []byte) {
 		var point Element
